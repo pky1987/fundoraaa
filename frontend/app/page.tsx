@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useAccount, useConnect, useDisconnect, useReadContract, useWriteContract, useBalance } from 'wagmi';
+import { useAccount, useConnect, useDisconnect, useReadContract, useWriteContract, useBalance, useWaitForTransactionReceipt } from 'wagmi';
 import { formatEther, parseEther } from 'viem';
 import { contractAddress, abi } from '../constants/contract';
+import { sepolia } from 'wagmi/chains';
 import { Rocket, Wallet, Plus, Coins, Calendar, Image as ImageIcon, ExternalLink, ShieldCheck, TrendingUp, Info } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -29,12 +30,27 @@ export default function Home() {
     image: '',
   });
 
-  // Read Campaigns from contract
+  // Read Campaigns from contract - Explicitly set chainId to Sepolia so it works for users who haven't connected their wallet yet
   const { data: campaigns, isError, isLoading, refetch } = useReadContract({
     address: contractAddress as `0x${string}`,
     abi: abi,
     functionName: 'getCampaigns',
+    chainId: sepolia.id,
   }) as { data: any[], isError: boolean, isLoading: boolean, refetch: () => void };
+
+  // Track status of current transaction
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined);
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+    hash: txHash,
+  });
+
+  // Effect to refetch when tx is confirmed
+  React.useEffect(() => {
+    if (isConfirmed && txHash) {
+      refetch();
+      setTxHash(undefined);
+    }
+  }, [isConfirmed, txHash, refetch]);
 
   const handleCreateCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,10 +75,10 @@ export default function Home() {
           formData.image
         ],
       }, {
-        onSuccess: () => {
-          alert("Campaign Created Successfully! Waiting for block confirmation...");
+        onSuccess: (hash) => {
+          setTxHash(hash);
+          alert("Campaign creation submitted! Waiting for confirmation...");
           setFormData({ title: '', description: '', target: '', deadline: '', image: '' });
-          setTimeout(() => refetch(), 5000);
         },
         onError: (err) => {
           console.error(err);
@@ -75,6 +91,10 @@ export default function Home() {
   };
 
   const donate = (id: number) => {
+    if (!isConnected) {
+      alert("Please connect your wallet first");
+      return;
+    }
     const amount = prompt("Enter amount to donate (in ETH):");
     if (!amount || isNaN(Number(amount))) return;
 
@@ -85,9 +105,13 @@ export default function Home() {
       args: [BigInt(id)],
       value: parseEther(amount),
     }, {
-      onSuccess: () => {
-        alert("Donation sent! Confirm in MetaMask.");
-        setTimeout(() => refetch(), 5000);
+      onSuccess: (hash) => {
+        setTxHash(hash);
+        alert("Donation submitted! Waiting for confirmation...");
+      },
+      onError: (err) => {
+        console.error(err);
+        alert("Donation failed. Check console.");
       }
     });
   };
@@ -124,16 +148,22 @@ export default function Home() {
             </div>
           ) : (
             <div className="flex gap-2">
-              {connectors.map((connector) => (
-                <button
-                  key={connector.id}
-                  onClick={() => connect({ connector })}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold shadow-[0_4px_20px_rgba(79,70,229,0.2)] transition-all active:scale-95 flex items-center gap-2"
-                >
-                  <Wallet className="w-4 h-4" />
-                  Connect MetaMask
-                </button>
-              ))}
+              {/* Show only the first MetaMask connector if multiple injected ones exist, or just the first available connector */}
+              {(() => {
+                const metamaskConnector = connectors.find(c => c.name === 'MetaMask');
+                const connectorToShow = metamaskConnector || connectors[0];
+                
+                return connectorToShow ? (
+                  <button
+                    key={connectorToShow.id}
+                    onClick={() => connect({ connector: connectorToShow })}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold shadow-[0_4px_20px_rgba(79,70,229,0.2)] transition-all active:scale-95 flex items-center gap-2"
+                  >
+                    <Wallet className="w-4 h-4" />
+                    Connect {connectorToShow.name === 'Injected' ? 'MetaMask' : connectorToShow.name}
+                  </button>
+                ) : null;
+              })()}
             </div>
           )}
         </div>
@@ -250,11 +280,11 @@ export default function Home() {
             </div>
 
             <button
-              disabled={isWriting}
+              disabled={isWriting || isConfirming}
               type="submit"
               className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold py-5 rounded-2xl shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 active:scale-[0.98]"
             >
-              {isWriting ? "Confirming..." : <><Plus className="w-5 h-5" /> Launch Campaign</>}
+              {isWriting ? "Confirming in Wallet..." : isConfirming ? "Confirming on Chain..." : <><Plus className="w-5 h-5" /> Launch Campaign</>}
             </button>
           </form>
         </div>
